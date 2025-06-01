@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create Kinesis Firehose Delivery Stream with S3 destination and CloudWatch logging
+
+Resources:
+
+  FirehoseS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "device-data-stream-s3bucket"
+
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/kinesisfirehose/device-data-stream-firehose-logs"
+      RetentionInDays: 7
+
+  FirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: "device-data-stream-log-stream"
+
+
+  FirehoseTransformLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "device-data-stream-lambda"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 180
+      Code:
+        ZipFile: |
+          import base64
+          print('Loading function')
+          def lambda_handler(event, context):
+              output = []
+              for record in event['records']:
+                  print(record['recordId'])
+                  payload = base64.b64decode(record['data']).decode('utf-8')
+                  output_record = {
+                      'recordId': record['recordId'],
+                      'result': 'Ok',
+                      'data': base64.b64encode(payload.encode('utf-8')).decode('utf-8')
+                  }
+                  output.append(output_record)
+              print('Successfully processed {} records.'.format(len(event['records'])))
+              return {'records': output}
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaBasicExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"  
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "device-data-stream-iamrole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "device-data-stream-iam-access-policy"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub "${FirehoseS3Bucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource: !Sub "${FirehoseLogGroup.Arn}:*"
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt FirehoseTransformLambda.Arn                
+
+  FirehoseDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: "Device-Data-Stream-Firehose"
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt FirehoseS3Bucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        BufferingHints:
+          SizeInMBs: 1           # Buffer up to 5 MB of data
+          IntervalInSeconds: 60 # Or flush every 5 minutes
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseLogGroup
+          LogStreamName: !Ref FirehoseLogStream
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt FirehoseTransformLambda.Arn          
