@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Device Management IoT Core Rule with Lambda to clean & enrich system events data and send to Firehose
+
+Parameters:
+  FirehoseStreamName:
+    Type: String
+    Description: Name of the existing (Device-Data-Stream-Firehose) Kinesis Firehose delivery stream
+
+Resources:
+
+  ### 🔐 Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: device-data-iotcore-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: device-data-iotcore-lambda-logging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ### 🧠 Lambda Function to Enrich IoT Data
+  IoTStandardizationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: device-data-iotcore-lambda
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Timeout: 180
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          from datetime import datetime
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def lambda_handler(event, context):
+              logger.info(f"Raw event: {event}")
+              logger.info(f"Raw context: {context}")
+              event['timestamp'] = datetime.utcnow().isoformat() + 'Z'
+              logger.info(f"Enriched event: {event}")
+              return {
+                      'payload': event
+              }
+
+  ### 🔐 IoT to Firehose Role
+  IoTToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: device-data-iotcore-firehose-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowFirehosePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !Sub arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/${FirehoseStreamName}
+
+  ### 🔐 IoT to Lambda Invocation Role
+  IoTInvokeLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: device-data-iotcore-invoke-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowInvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt IoTStandardizationLambda.Arn
+
+  ### 📡 IoT Rule: MQTT -> Lambda -> Firehose
+  IoTTopicRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: DeviceDataIotcoreTopicRule
+      TopicRulePayload:
+        Sql: "SELECT * FROM 'sdk/test/python'"
+        AwsIotSqlVersion: "2016-03-23"
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt IoTStandardizationLambda.Arn
+          - Firehose:
+              DeliveryStreamName: !Ref FirehoseStreamName
+              RoleArn: !GetAtt IoTToFirehoseRole.Arn
+              Separator: "\n"
+        ErrorAction:
+          Lambda:
+            FunctionArn: !GetAtt IoTStandardizationLambda.Arn
