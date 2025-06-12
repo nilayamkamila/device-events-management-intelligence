@@ -4,7 +4,7 @@ from datetime import datetime
 
 # Replace these with your actual paths and endpoint
 client_id = "basicPubSub"
-iot_endpoint = "End-Point"
+iot_endpoint = "a3w0igapc77zf8-ats.iot.us-east-1.amazonaws.com"
 topic = "sdk/test/python"
 
 #ca_path = "AmazonRootCA1.pem"
@@ -30,9 +30,9 @@ print("Connected!")
 
 # Create a JSON payload
 payload = {
-    "message": "Hello AWS IoT!",
-    "timestamp": datetime.utcnow().isoformat() + "Z",
-    "temperature": 23.4,
+    "message": "Hello AWS IoT Nilayam!",
+    #"timestamp": datetime.utcnow().isoformat() + "Z",
+    "temperature": 23.5,
     "payload": {
         "humidity": 45.6,
         "pressure": 1013.25
