@@ -1,0 +1,1 @@
+existing_s3_bucket_name = "device-data-stream-s3bucket"
